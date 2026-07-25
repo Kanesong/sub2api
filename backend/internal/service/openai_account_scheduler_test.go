@@ -83,8 +83,8 @@ func (r schedulerGroupAwareOpenAIAccountRepo) ListSchedulableUngroupedByPlatform
 }
 
 type schedulerAcquireCall struct {
-	accountID       int64
-	maxConcurrency int
+	accountID	int64
+	maxConcurrency	int
 }
 
 type schedulerTestConcurrencyCache struct {
@@ -2230,7 +2230,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_GrokOAuthUsesSingleRunt
 		&groupID,
 		"",
 		"",
-		"grok-4",
+		"",
 		nil,
 		OpenAIUpstreamTransportAny,
 		"",
@@ -2281,7 +2281,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_GrokAPIKeyKeepsConfigur
 		&groupID,
 		"",
 		"",
-		"grok-4",
+		"",
 		nil,
 		OpenAIUpstreamTransportAny,
 		"",
@@ -2393,7 +2393,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_GrokOAuthStickyBusyEsca
 		&groupID,
 		"",
 		"session_hash_grok_busy",
-		"grok-4",
+		"",
 		nil,
 		OpenAIUpstreamTransportAny,
 		"",
@@ -2443,7 +2443,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_GrokOAuthFallbackWaitPl
 		}),
 	}
 
-	selection, _, err := svc.SelectAccountWithSchedulerForCapability(ctx, &groupID, "", "", "grok-4", nil, OpenAIUpstreamTransportAny, "", false, false, false, PlatformGrok)
+	selection, _, err := svc.SelectAccountWithSchedulerForCapability(ctx, &groupID, "", "", "", nil, OpenAIUpstreamTransportAny, "", false, false, false, PlatformGrok)
 	require.NoError(t, err)
 	require.NotNil(t, selection)
 	require.NotNil(t, selection.Account)
