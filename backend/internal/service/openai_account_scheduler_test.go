@@ -83,8 +83,8 @@ func (r schedulerGroupAwareOpenAIAccountRepo) ListSchedulableUngroupedByPlatform
 }
 
 type schedulerAcquireCall struct {
-	accountID	int64
-	maxConcurrency	int
+	accountID      int64
+	maxConcurrency int
 }
 
 type schedulerTestConcurrencyCache struct {
@@ -2432,8 +2432,8 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_GrokOAuthFallbackWaitPl
 		GroupIDs:    []int64{groupID},
 	}
 	svc := &OpenAIGatewayService{
-		accountRepo: schedulerTestOpenAIAccountRepo{accounts: []Account{account}},
-		cfg:         newSchedulerTestOpenAIWSV2Config(),
+		accountRepo:      schedulerTestOpenAIAccountRepo{accounts: []Account{account}},
+		cfg:              newSchedulerTestOpenAIWSV2Config(),
 		rateLimitService: newOpenAIAdvancedSchedulerRateLimitService("true"),
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{
 			acquireResults: map[int64]bool{account.ID: false},

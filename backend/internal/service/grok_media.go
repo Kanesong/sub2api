@@ -1738,7 +1738,7 @@ func CommitBufferedGrokMediaResponse(c *gin.Context) error {
 	if c == nil || c.Writer == nil || c.Writer.Written() {
 		return fmt.Errorf("grok media response cannot be committed")
 	}
-	value, ok := c.Get(grokMediaBufferedResponseContextKey)
+	value, _ := c.Get(grokMediaBufferedResponseContextKey)
 	buffered, ok := value.(*grokMediaBufferedResponse)
 	if !ok || buffered == nil {
 		return fmt.Errorf("grok media buffered response is missing")
@@ -1761,7 +1761,7 @@ func BufferedGrokMediaResponse(c *gin.Context) (int, string, []byte, error) {
 	if c == nil {
 		return 0, "", nil, fmt.Errorf("grok media buffered response is missing")
 	}
-	value, ok := c.Get(grokMediaBufferedResponseContextKey)
+	value, _ := c.Get(grokMediaBufferedResponseContextKey)
 	buffered, ok := value.(*grokMediaBufferedResponse)
 	if !ok || buffered == nil {
 		return 0, "", nil, fmt.Errorf("grok media buffered response is missing")
