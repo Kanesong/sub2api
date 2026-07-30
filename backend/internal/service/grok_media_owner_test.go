@@ -457,7 +457,7 @@ func TestSelectGrokMediaVideoRequestOwnerBusyNeverSwitches(t *testing.T) {
 	require.False(t, selection.Acquired)
 	require.NotNil(t, selection.WaitPlan)
 	require.Equal(t, owner.ID, selection.WaitPlan.AccountID)
-	require.Equal(t, 1, selection.WaitPlan.MaxConcurrency)
+	require.Equal(t, 5, selection.WaitPlan.MaxConcurrency)
 	require.Equal(t, 90*time.Second, selection.WaitPlan.Timeout)
 	require.Equal(t, []int64{owner.ID}, acquiredIDs)
 }
@@ -492,7 +492,7 @@ func TestSelectGrokMediaVideoRequestOwnerStatusAndContentUseSameOwnerAndRelease(
 	require.NoError(t, err)
 	require.Equal(t, owner.ID, statusSelection.Account.ID)
 	require.Equal(t, owner.ID, contentSelection.Account.ID)
-	require.Equal(t, 1, statusSelection.Account.SchedulingSlotConcurrency())
+	require.Equal(t, 3, statusSelection.Account.SchedulingSlotConcurrency())
 	require.NotNil(t, statusSelection.ReleaseFunc)
 	require.NotNil(t, contentSelection.ReleaseFunc)
 	statusSelection.ReleaseFunc()

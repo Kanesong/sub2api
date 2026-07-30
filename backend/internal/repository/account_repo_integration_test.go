@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -1233,6 +1234,63 @@ func (s *AccountRepoSuite) TestUpdateGrokOAuthCredentialsIfUnchanged_AppliesAndP
 	)
 	s.Require().NoError(err)
 	s.Require().Equal(1, outboxCount)
+}
+
+func (s *AccountRepoSuite) TestUpdateGrokOAuthCredentialsIfUnchanged_PropagatesTokensToPurposeSibling() {
+	sharedCredentials := map[string]any{
+		"access_token":   "attempted-access",
+		"refresh_token":  "attempted-refresh",
+		"sub":            "shared-grok-subject",
+		"client_id":      "shared-grok-client",
+		"_token_version": int64(30),
+	}
+	sourceCredentials := maps.Clone(sharedCredentials)
+	sourceCredentials["model_mapping"] = map[string]any{"grok-imagine-video-1.5": "video-upstream"}
+	siblingCredentials := maps.Clone(sharedCredentials)
+	siblingCredentials["model_mapping"] = map[string]any{"grok-4.5": "language-upstream"}
+
+	source := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name: "grok-video-purpose", Platform: service.PlatformGrok, Type: service.AccountTypeOAuth,
+		Status: service.StatusActive, Schedulable: true, Credentials: sourceCredentials,
+	})
+	sibling := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name: "grok-language-purpose", Platform: service.PlatformGrok, Type: service.AccountTypeOAuth,
+		Status: service.StatusActive, Schedulable: true, Credentials: siblingCredentials,
+	})
+	observed, err := s.repo.GetByID(s.ctx, source.ID)
+	s.Require().NoError(err)
+	_, err = s.repo.sql.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
+	s.Require().NoError(err)
+
+	rotatedCredentials := maps.Clone(sourceCredentials)
+	rotatedCredentials["access_token"] = "rotated-access"
+	rotatedCredentials["refresh_token"] = "rotated-refresh"
+	rotatedCredentials["_token_version"] = int64(31)
+	applied, err := s.repo.UpdateGrokOAuthCredentialsIfUnchanged(
+		s.ctx, source.ID, observed.Credentials, observed.ProxyID, rotatedCredentials,
+	)
+
+	s.Require().NoError(err)
+	s.Require().True(applied)
+	gotSource, err := s.repo.GetByID(s.ctx, source.ID)
+	s.Require().NoError(err)
+	gotSibling, err := s.repo.GetByID(s.ctx, sibling.ID)
+	s.Require().NoError(err)
+	s.Require().Equal("rotated-refresh", gotSource.GetGrokRefreshToken())
+	s.Require().Equal("rotated-refresh", gotSibling.GetGrokRefreshToken())
+	s.Require().EqualValues(int64(31), gotSibling.Credentials["_token_version"])
+	s.Require().Equal(map[string]any{"grok-4.5": "language-upstream"}, gotSibling.Credentials["model_mapping"])
+
+	var outboxCount int
+	err = scanSingleRow(
+		s.ctx,
+		s.repo.sql,
+		"SELECT COUNT(*) FROM scheduler_outbox WHERE event_type = $1 AND account_id IN ($2, $3)",
+		[]any{service.SchedulerOutboxEventAccountChanged, source.ID, sibling.ID},
+		&outboxCount,
+	)
+	s.Require().NoError(err)
+	s.Require().Equal(2, outboxCount)
 }
 
 func (s *AccountRepoSuite) TestUpdateGrokOAuthCredentialsIfUnchanged_SkipsConcurrentReauthorization() {

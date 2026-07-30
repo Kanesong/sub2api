@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strconv"
@@ -340,6 +341,14 @@ func (p *GrokTokenProvider) InvalidateToken(ctx context.Context, account *Accoun
 func GrokTokenCacheKey(account *Account) string {
 	if account == nil {
 		return "grok:account:0"
+	}
+	if account.IsGrokOAuth() {
+		subject := strings.TrimSpace(account.GetCredential("sub"))
+		if subject != "" {
+			clientID := strings.TrimSpace(account.GetCredential("client_id"))
+			identityHash := sha256.Sum256([]byte(clientID + "\x00" + subject))
+			return fmt.Sprintf("grok:identity:%x", identityHash[:16])
+		}
 	}
 	return "grok:account:" + strconv.FormatInt(account.ID, 10)
 }

@@ -261,6 +261,39 @@ func TestGrokTokenCacheKeySeparatesAccountsWithSameEmail(t *testing.T) {
 	require.NotEqual(t, GrokTokenCacheKey(first), GrokTokenCacheKey(second))
 }
 
+func TestGrokTokenCacheKeySharesStableOAuthIdentityAcrossPurposeRows(t *testing.T) {
+	first := &Account{
+		ID:       351,
+		Platform: PlatformGrok,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"sub":       "grok-user-1",
+			"client_id": "grok-client",
+		},
+	}
+	second := &Account{
+		ID:       352,
+		Platform: PlatformGrok,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"sub":       "grok-user-1",
+			"client_id": "grok-client",
+		},
+	}
+	differentIdentity := &Account{
+		ID:       353,
+		Platform: PlatformGrok,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"sub":       "grok-user-2",
+			"client_id": "grok-client",
+		},
+	}
+
+	require.Equal(t, GrokTokenCacheKey(first), GrokTokenCacheKey(second))
+	require.NotEqual(t, GrokTokenCacheKey(first), GrokTokenCacheKey(differentIdentity))
+}
+
 func TestClaudeTokenCacheKey(t *testing.T) {
 	tests := []struct {
 		name     string

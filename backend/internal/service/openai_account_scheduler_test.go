@@ -2204,7 +2204,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyBusyKeepsS
 	require.True(t, decision.StickySessionHit)
 }
 
-func TestOpenAIGatewayService_SelectAccountWithScheduler_GrokOAuthUsesSingleRuntimeSlot(t *testing.T) {
+func TestOpenAIGatewayService_SelectAccountWithScheduler_GrokOAuthUsesConfiguredRuntimeSlots(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(10200)
 	account := Account{
@@ -2246,10 +2246,10 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_GrokOAuthUsesSingleRunt
 	require.True(t, selection.Acquired)
 	require.Equal(t, 5, selection.Account.Concurrency, "persisted account concurrency must stay unchanged")
 	require.NotEmpty(t, acquireCalls)
-	require.Equal(t, schedulerAcquireCall{accountID: account.ID, maxConcurrency: 1}, acquireCalls[0])
+	require.Equal(t, schedulerAcquireCall{accountID: account.ID, maxConcurrency: 5}, acquireCalls[0])
 	require.NotEmpty(t, loadBatchCalls)
 	require.Len(t, loadBatchCalls[0], 1)
-	require.Equal(t, AccountWithConcurrency{ID: account.ID, MaxConcurrency: 1}, loadBatchCalls[0][0])
+	require.Equal(t, AccountWithConcurrency{ID: account.ID, MaxConcurrency: 5}, loadBatchCalls[0][0])
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
@@ -2374,7 +2374,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_GrokOAuthStickyBusyEsca
 			22012: true,
 		},
 		loadMap: map[int64]*AccountLoadInfo{
-			22011: {AccountID: 22011, LoadRate: 100, CurrentConcurrency: 1, WaitingCount: 0},
+			22011: {AccountID: 22011, LoadRate: 100, CurrentConcurrency: 5, WaitingCount: 0},
 			22012: {AccountID: 22012, LoadRate: 0, CurrentConcurrency: 0, WaitingCount: 0},
 		},
 		acquireCalls: &acquireCalls,
@@ -2411,15 +2411,15 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_GrokOAuthStickyBusyEsca
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 	require.False(t, decision.StickySessionHit)
 	require.GreaterOrEqual(t, len(acquireCalls), 2)
-	require.Equal(t, schedulerAcquireCall{accountID: 22011, maxConcurrency: 1}, acquireCalls[0])
-	require.Equal(t, schedulerAcquireCall{accountID: 22012, maxConcurrency: 1}, acquireCalls[1])
+	require.Equal(t, schedulerAcquireCall{accountID: 22011, maxConcurrency: 5}, acquireCalls[0])
+	require.Equal(t, schedulerAcquireCall{accountID: 22012, maxConcurrency: 5}, acquireCalls[1])
 	require.Equal(t, int64(22011), cache.sessionBindings["openai:session_hash_grok_busy"], "temporary spillover must not rewrite the sticky binding")
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
 }
 
-func TestOpenAIGatewayService_SelectAccountWithScheduler_GrokOAuthFallbackWaitPlanUsesSingleSlot(t *testing.T) {
+func TestOpenAIGatewayService_SelectAccountWithScheduler_GrokOAuthFallbackWaitPlanUsesConfiguredSlots(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(10204)
 	account := Account{
@@ -2438,7 +2438,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_GrokOAuthFallbackWaitPl
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{
 			acquireResults: map[int64]bool{account.ID: false},
 			loadMap: map[int64]*AccountLoadInfo{
-				account.ID: {AccountID: account.ID, LoadRate: 100, CurrentConcurrency: 1},
+				account.ID: {AccountID: account.ID, LoadRate: 100, CurrentConcurrency: 5},
 			},
 		}),
 	}
@@ -2450,7 +2450,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_GrokOAuthFallbackWaitPl
 	require.False(t, selection.Acquired)
 	require.NotNil(t, selection.WaitPlan)
 	require.Equal(t, account.ID, selection.WaitPlan.AccountID)
-	require.Equal(t, 1, selection.WaitPlan.MaxConcurrency)
+	require.Equal(t, 5, selection.WaitPlan.MaxConcurrency)
 	require.Equal(t, 5, selection.Account.Concurrency)
 }
 func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyEscapeByTTFT(t *testing.T) {

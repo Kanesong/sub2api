@@ -1379,9 +1379,13 @@ func (r *accountRepository) SetGrokOAuthErrorIfCredentialsUnchanged(
 
 // UpdateGrokOAuthCredentialsIfUnchanged persists provider-issued replacement
 // credentials only while the complete Grok OAuth credential document and
-// proxy still match the fresh snapshot used by the upstream refresh call. The
-// scheduler outbox insert is part of the same PostgreSQL statement, so a
-// durable invalidation failure rolls the credential update back as well.
+// proxy still match the fresh snapshot used by the upstream refresh call.
+//
+// Purpose-specific rows for one Grok identity have independent scheduler IDs,
+// but a rotating OAuth credential. After the source CAS succeeds, token fields
+// are propagated only to siblings with the same subject, client, proxy, and
+// token version. Per-row routing fields such as model_mapping remain intact.
+// Every changed row publishes an outbox event in the same PostgreSQL statement.
 func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
 	ctx context.Context,
 	id int64,
@@ -1401,7 +1405,7 @@ func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
 		return false, err
 	}
 	result, err := r.sql.ExecContext(ctx, `
-		WITH updated AS (
+		WITH updated_source AS (
 		UPDATE accounts AS a
 		SET credentials = $1::jsonb,
 			updated_at = NOW()
@@ -1412,6 +1416,35 @@ func (r *accountRepository) UpdateGrokOAuthCredentialsIfUnchanged(
 			AND a.credentials = $5::jsonb
 			AND a.proxy_id IS NOT DISTINCT FROM $6
 		RETURNING a.id
+		),
+		updated_siblings AS (
+		UPDATE accounts AS a
+		SET credentials = a.credentials || (
+				SELECT COALESCE(jsonb_object_agg(entry.key, entry.value), '{}'::jsonb)
+				FROM jsonb_each($1::jsonb) AS entry
+				WHERE entry.key IN (
+					'access_token', 'refresh_token', 'id_token', 'expires_at',
+					'token_type', 'client_id', 'scope', 'email', 'sub', 'team_id',
+					'subscription_tier', 'entitlement_status', '_token_version'
+				)
+			),
+			updated_at = NOW()
+		FROM updated_source
+		WHERE a.id <> $2
+			AND a.deleted_at IS NULL
+			AND a.platform = $3
+			AND a.type = $4
+			AND NULLIF($5::jsonb ->> 'sub', '') IS NOT NULL
+			AND a.credentials ->> 'sub' = $5::jsonb ->> 'sub'
+			AND COALESCE(a.credentials ->> 'client_id', '') = COALESCE($5::jsonb ->> 'client_id', '')
+			AND a.credentials -> '_token_version' IS NOT DISTINCT FROM $5::jsonb -> '_token_version'
+			AND a.proxy_id IS NOT DISTINCT FROM $6
+		RETURNING a.id
+		),
+		updated AS (
+			SELECT id FROM updated_source
+			UNION ALL
+			SELECT id FROM updated_siblings
 		)
 		INSERT INTO scheduler_outbox (event_type, account_id, group_id, payload)
 		SELECT $7, updated.id, NULL, NULL FROM updated
