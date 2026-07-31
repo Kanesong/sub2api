@@ -14,7 +14,7 @@ import (
 // Keep this matcher deliberately narrow: account entitlement and suspension
 // messages may mention policy but must retain the normal account failover path.
 func isGrokContentPolicyRejection(statusCode int, responseBody []byte) bool {
-	if statusCode != http.StatusForbidden || len(responseBody) == 0 {
+	if (statusCode != http.StatusBadRequest && statusCode != http.StatusForbidden) || len(responseBody) == 0 {
 		return false
 	}
 	if grokAccountAccessMessage(string(responseBody)) {
@@ -88,6 +88,7 @@ func normalizeGrokErrorMarker(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	value = strings.ReplaceAll(value, "-", "_")
 	value = strings.ReplaceAll(value, " ", "_")
+	value = strings.ReplaceAll(value, ":", "_")
 	return value
 }
 
@@ -96,7 +97,9 @@ func isGrokContentPolicyCode(value string) bool {
 	case "content_filter",
 		"content_policy",
 		"content_policy_violation",
+		"content_moderated",
 		"content_moderation",
+		"imagine_content_moderated",
 		"cyber_policy",
 		"new_sensitive":
 		return true
@@ -162,6 +165,7 @@ func grokContentPolicyMessage(value string) bool {
 		"content moderation rejection",
 		"content moderation rejected",
 		"content moderation blocked",
+		"generated video rejected by content moderation",
 		"request blocked by content moderation",
 		"request rejected by content moderation",
 		"request blocked by policy",
@@ -178,6 +182,58 @@ func grokContentPolicyMessage(value string) bool {
 	}
 
 	return false
+}
+
+// isGrokImageDownloadInterrupted identifies the narrow xAI media-fetch failure
+// that is safe for callers to retry as a new generation attempt. It is not an
+// account-health failure and must not consume another account through failover.
+func isGrokImageDownloadInterrupted(statusCode int, responseBody []byte) bool {
+	if statusCode != http.StatusBadRequest || len(responseBody) == 0 {
+		return false
+	}
+
+	var payload any
+	if json.Unmarshal(responseBody, &payload) == nil && grokStructuredImageDownloadMarker(payload) {
+		return true
+	}
+
+	lower := strings.ToLower(string(responseBody))
+	return strings.Contains(lower, "image_download_interrupted") ||
+		strings.Contains(lower, "failed to download the provided image") ||
+		strings.Contains(lower, "connection dropped while downloading the image")
+}
+
+func grokStructuredImageDownloadMarker(value any) bool {
+	switch node := value.(type) {
+	case map[string]any:
+		for key, child := range node {
+			normalizedKey := normalizeGrokErrorMarker(key)
+			switch normalizedKey {
+			case "code", "error_code", "type", "category", "reason", "image_download_error":
+				if marker, ok := child.(string); ok && normalizeGrokErrorMarker(marker) == "image_download_interrupted" {
+					return true
+				}
+			}
+			if grokStructuredImageDownloadMarker(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range node {
+			if grokStructuredImageDownloadMarker(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func grokImageDownloadInterruptedClientMessage(responseBody []byte) string {
+	message := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(responseBody)))
+	if message == "" {
+		return "Upstream image download interrupted; retry with a new generation attempt"
+	}
+	return message
 }
 
 func grokContentPolicyClientMessage(responseBody []byte) string {
