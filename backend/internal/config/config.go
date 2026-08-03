@@ -1074,8 +1074,9 @@ func (c *UserMessageQueueConfig) GetEffectiveMode() string {
 	return ""
 }
 
-// DefaultOpenAIWSClientFirstMessageTimeoutSeconds preserves the legacy ingress deadline.
-const DefaultOpenAIWSClientFirstMessageTimeoutSeconds = 30
+// DefaultOpenAIWSClientFirstMessageTimeoutSeconds allows large compressed
+// contexts enough time to arrive after the WebSocket upgrade.
+const DefaultOpenAIWSClientFirstMessageTimeoutSeconds = 180
 
 // GatewayOpenAIWSConfig OpenAI Responses WebSocket 配置。
 // 注意：默认全局开启；如需回滚可使用 force_http 或关闭 enabled。

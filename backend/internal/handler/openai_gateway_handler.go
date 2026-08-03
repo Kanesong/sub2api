@@ -1506,8 +1506,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		)
 		return
 	}
+	firstMessageReadOwnsClose := false
 	defer func() {
-		_ = wsConn.CloseNow()
+		if !firstMessageReadOwnsClose {
+			_ = wsConn.CloseNow()
+		}
 	}()
 	wsConn.SetReadLimit(service.ResolveOpenAIWSClientReadLimitBytes(h.cfg))
 
@@ -1520,9 +1523,15 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		"missing first response.create message",
 	)
 	if err != nil {
+		// ReadOpenAIWSClientMessage owns bounded cleanup for every read error.
+		// Do not synchronously close again and pin the ingress lease on a
+		// partially received or oversized frame.
+		firstMessageReadOwnsClose = true
 		if errors.Is(context.Cause(ctx), service.ErrOpenAIWSIngressLeaseLost) {
-			reqLog.Warn("openai.websocket_ingress_lease_lost_before_first_message", zap.Error(err))
-			closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "websocket ingress capacity lease lost; please reconnect")
+			reqLog.Warn("openai.websocket_ingress_lease_lost_before_first_message",
+				zap.Error(err),
+				zap.Bool("cleanup_timed_out", errors.Is(err, service.ErrOpenAIWSClientCleanupTimeout)),
+			)
 			return
 		}
 		closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
@@ -1532,8 +1541,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			zap.String("close_status", closeStatus),
 			zap.String("close_reason", closeReason),
 			zap.Duration("read_timeout", firstMessageTimeout),
+			zap.Bool("cleanup_timed_out", errors.Is(err, service.ErrOpenAIWSClientCleanupTimeout)),
 		)
-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "missing first response.create message")
 		return
 	}
 	if msgType != coderws.MessageText && msgType != coderws.MessageBinary {

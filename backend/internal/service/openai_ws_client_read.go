@@ -14,8 +14,18 @@ type openAIWSClientReadResult struct {
 	err         error
 }
 
-// ReadOpenAIWSClientMessage keeps one reader alive while control events send
-// their close frame, then closes the transport and joins that reader.
+const (
+	openAIWSClientCloseHandshakeGrace = time.Second
+	openAIWSClientCleanupJoinTimeout  = time.Second
+)
+
+// ErrOpenAIWSClientCleanupTimeout marks a client connection whose bounded
+// cleanup did not finish before the handler was allowed to release its lease.
+var ErrOpenAIWSClientCleanupTimeout = errors.New("openai websocket client cleanup timed out")
+
+// ReadOpenAIWSClientMessage owns connection cleanup for every returned read
+// error. Control events get a brief close-handshake grace period; stalled or
+// invalid reads are force-closed without indefinitely holding the caller.
 func ReadOpenAIWSClientMessage(
 	controlCtx context.Context,
 	conn *coderws.Conn,
@@ -53,9 +63,12 @@ func readOpenAIWSClientMessageWithTimeoutStart(
 		controlCtx = context.Background()
 	}
 
+	readCtx, cancelRead := context.WithCancel(context.Background())
+	defer cancelRead()
+
 	readDone := make(chan openAIWSClientReadResult, 1)
 	go func() {
-		messageType, payload, err := conn.Read(context.Background())
+		messageType, payload, err := conn.Read(readCtx)
 		readDone <- openAIWSClientReadResult{messageType: messageType, payload: payload, err: err}
 	}()
 
@@ -88,15 +101,74 @@ func readOpenAIWSClientMessageWithTimeoutStart(
 	}()
 
 	closeAndJoin := func(status coderws.StatusCode, reason string, cause error) (coderws.MessageType, []byte, error) {
-		_ = conn.Close(status, reason)
-		_ = conn.CloseNow()
-		<-readDone
+		closeDone := make(chan struct{}, 1)
+		go func() {
+			_ = conn.Close(status, reason)
+			closeDone <- struct{}{}
+		}()
+
+		closeWait := (<-chan struct{})(closeDone)
+		graceTimer := time.NewTimer(openAIWSClientCloseHandshakeGrace)
+		select {
+		case <-closeWait:
+			closeWait = nil
+		case <-graceTimer.C:
+		}
+		if !graceTimer.Stop() {
+			select {
+			case <-graceTimer.C:
+			default:
+			}
+		}
+
+		// coder/websocket binds Read context cancellation to the underlying
+		// transport. This force-closes a peer that does not answer the close
+		// handshake and prevents a partial first frame from pinning the reader.
+		cancelRead()
+
+		readWait := (<-chan openAIWSClientReadResult)(readDone)
+		joinTimer := time.NewTimer(openAIWSClientCleanupJoinTimeout)
+		defer joinTimer.Stop()
+		for readWait != nil || closeWait != nil {
+			select {
+			case <-readWait:
+				readWait = nil
+			case <-closeWait:
+				closeWait = nil
+			case <-joinTimer.C:
+				return 0, nil, NewOpenAIWSClientCloseError(
+					status,
+					reason,
+					errors.Join(cause, ErrOpenAIWSClientCleanupTimeout),
+				)
+			}
+		}
 		return 0, nil, NewOpenAIWSClientCloseError(status, reason, cause)
+	}
+	forceCloseBounded := func(cause error) error {
+		cancelRead()
+		closeDone := make(chan struct{}, 1)
+		go func() {
+			_ = conn.CloseNow()
+			closeDone <- struct{}{}
+		}()
+
+		joinTimer := time.NewTimer(openAIWSClientCleanupJoinTimeout)
+		defer joinTimer.Stop()
+		select {
+		case <-closeDone:
+			return cause
+		case <-joinTimer.C:
+			return errors.Join(cause, ErrOpenAIWSClientCleanupTimeout)
+		}
 	}
 
 	for {
 		select {
 		case result := <-readDone:
+			if result.err != nil {
+				result.err = forceCloseBounded(result.err)
+			}
 			return result.messageType, result.payload, result.err
 		case <-timeoutStart:
 			startTimeout()

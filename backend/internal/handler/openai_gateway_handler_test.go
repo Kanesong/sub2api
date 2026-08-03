@@ -970,9 +970,15 @@ func TestOpenAIResponsesWebSocket_FirstMessageTimeoutUsesConfig(t *testing.T) {
 	logSink, restore := captureHandlerStructuredLog(t)
 	defer restore()
 
-	h := newOpenAIHandlerForPreviousResponseIDValidation(t, nil)
+	cache := &concurrencyCacheMock{
+		acquireIngressLeaseFn: func(context.Context, int64, int, string) (bool, error) {
+			return true, nil
+		},
+	}
+	h := newOpenAIHandlerForPreviousResponseIDValidation(t, cache)
 	h.cfg = &config.Config{}
 	h.cfg.Gateway.OpenAIWS.ClientFirstMessageTimeoutSeconds = 1
+	h.cfg.Gateway.OpenAIWS.MaxIngressConnectionsPerAPIKey = 1
 	wsServer := newOpenAIWSHandlerTestServer(t, h, middleware.AuthSubject{UserID: 1, Concurrency: 1})
 	defer wsServer.Close()
 
@@ -994,8 +1000,12 @@ func TestOpenAIResponsesWebSocket_FirstMessageTimeoutUsesConfig(t *testing.T) {
 	require.Less(t, elapsed, 4*time.Second)
 	require.Eventually(t, func() bool {
 		readTimeout, ok := logSink.FieldValueForMessage("openai.websocket_read_first_message_failed", "read_timeout")
-		return ok && readTimeout == time.Second &&
+		cleanupTimedOut, cleanupFieldOK := logSink.FieldValueForMessage("openai.websocket_read_first_message_failed", "cleanup_timed_out")
+		return ok && cleanupFieldOK && readTimeout == time.Second && cleanupTimedOut == false &&
 			logSink.ContainsMessageAtLevel("openai.websocket_read_first_message_failed", "warn")
+	}, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return atomic.LoadInt32(&cache.releaseIngressCalled) == 1
 	}, time.Second, 10*time.Millisecond)
 }
 
