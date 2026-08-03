@@ -84,8 +84,14 @@ func TestIsGrokContentPolicyRejection(t *testing.T) {
 			want:   true,
 		},
 		{
-			name:   "wrong status",
+			name:   "video moderation uses bad request",
 			status: http.StatusBadRequest,
+			body:   `{"error":{"code":"imagine:content-moderated","message":"Generated video rejected by content moderation"}}`,
+			want:   true,
+		},
+		{
+			name:   "unsupported status",
+			status: http.StatusTooManyRequests,
 			body:   `{"error":{"code":"new_sensitive"}}`,
 			want:   false,
 		},
@@ -94,6 +100,46 @@ func TestIsGrokContentPolicyRejection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, isGrokContentPolicyRejection(tt.status, []byte(tt.body)))
+		})
+	}
+}
+
+func TestIsGrokImageDownloadInterrupted(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{
+			name:   "structured provider code",
+			status: http.StatusBadRequest,
+			body:   `{"error":{"code":"image_download_interrupted","message":"download stopped"}}`,
+			want:   true,
+		},
+		{
+			name:   "nested provider detail",
+			status: http.StatusBadRequest,
+			body:   `{"error":{"details":{"image_download_error":"image_download_interrupted"}}}`,
+			want:   true,
+		},
+		{
+			name:   "message fallback",
+			status: http.StatusBadRequest,
+			body:   `{"error":{"message":"Failed to download the provided image: connection dropped while downloading the image"}}`,
+			want:   true,
+		},
+		{
+			name:   "same text on server error is not classified",
+			status: http.StatusBadGateway,
+			body:   `{"error":{"code":"image_download_interrupted"}}`,
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, isGrokImageDownloadInterrupted(tt.status, []byte(tt.body)))
 		})
 	}
 }
@@ -198,6 +244,59 @@ func TestGrokContentPolicy403MediaResponseBypassesCustomErrorCodes(t *testing.T)
 	require.Error(t, err)
 	require.Equal(t, http.StatusForbidden, recorder.Code)
 	require.Contains(t, recorder.Body.String(), "invalid_request_error")
+	require.Contains(t, recorder.Body.String(), `"code":"content_moderated"`)
+	require.Zero(t, repo.tempUnschedCalls)
+	require.Zero(t, repo.rateLimitedCalls)
+	require.Zero(t, repo.updateCalls)
+}
+
+func TestGrokContentPolicy400MediaResponseIncludesStableCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := `{"error":{"code":"imagine:content-moderated","message":"Generated video rejected by content moderation"}}`
+	repo := &grokQuotaAccountRepo{}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{ID: 4722, Platform: PlatformGrok, Type: AccountTypeOAuth}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/videos/request-1", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	_, err := svc.handleGrokMediaErrorResponse(context.Background(), resp, c, account, "request-id", "")
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"code":"content_moderated"`)
+	require.Contains(t, recorder.Body.String(), "Generated video rejected by content moderation")
+	require.Zero(t, repo.tempUnschedCalls)
+	require.Zero(t, repo.rateLimitedCalls)
+	require.Zero(t, repo.updateCalls)
+}
+
+func TestGrokImageDownloadInterruptedMediaResponseIncludesStableCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := `{"error":{"code":"image_download_interrupted","message":"Failed to download the provided image"}}`
+	repo := &grokQuotaAccountRepo{}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{ID: 4723, Platform: PlatformGrok, Type: AccountTypeOAuth}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/videos/request-2", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+
+	_, err := svc.handleGrokMediaErrorResponse(context.Background(), resp, c, account, "request-id", "")
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"type":"upstream_error"`)
+	require.Contains(t, recorder.Body.String(), `"code":"image_download_interrupted"`)
 	require.Zero(t, repo.tempUnschedCalls)
 	require.Zero(t, repo.rateLimitedCalls)
 	require.Zero(t, repo.updateCalls)

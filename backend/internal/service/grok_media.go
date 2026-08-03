@@ -1620,8 +1620,24 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 			Detail:             upstreamDetail,
 		})
 		MarkResponseCommitted(c)
-		writeGrokMediaErrorResponse(c, http.StatusForbidden, "invalid_request_error", clientMsg)
+		writeGrokMediaErrorResponseWithCode(c, resp.StatusCode, "invalid_request_error", "content_moderated", clientMsg)
 		return nil, fmt.Errorf("grok content policy rejection: %s", clientMsg)
+	}
+	if isGrokImageDownloadInterrupted(resp.StatusCode, body) {
+		clientMsg := grokImageDownloadInterruptedClientMessage(body)
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: resp.StatusCode,
+			UpstreamRequestID:  requestIDHeader,
+			Kind:               "retryable_media_input",
+			Message:            clientMsg,
+			Detail:             upstreamDetail,
+		})
+		MarkResponseCommitted(c)
+		writeGrokMediaErrorResponseWithCode(c, http.StatusBadRequest, "upstream_error", "image_download_interrupted", clientMsg)
+		return nil, fmt.Errorf("grok image download interrupted: %s", clientMsg)
 	}
 
 	if status, errType, errMsg, matched := applyErrorPassthroughRule(
@@ -1696,14 +1712,22 @@ func grokMediaErrorType(statusCode int) string {
 }
 
 func writeGrokMediaErrorResponse(c *gin.Context, statusCode int, errType, message string) {
+	writeGrokMediaErrorResponseWithCode(c, statusCode, errType, "", message)
+}
+
+func writeGrokMediaErrorResponseWithCode(c *gin.Context, statusCode int, errType, code, message string) {
 	if c == nil || c.Writer == nil || c.Writer.Written() {
 		return
 	}
+	errorPayload := gin.H{
+		"type":    strings.TrimSpace(errType),
+		"message": strings.TrimSpace(message),
+	}
+	if code = strings.TrimSpace(code); code != "" {
+		errorPayload["code"] = code
+	}
 	c.JSON(statusCode, gin.H{
-		"error": gin.H{
-			"type":    strings.TrimSpace(errType),
-			"message": strings.TrimSpace(message),
-		},
+		"error": errorPayload,
 	})
 }
 
