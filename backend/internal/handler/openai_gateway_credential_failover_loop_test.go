@@ -28,16 +28,18 @@ import (
 
 type grokCredentialHandlerRepo struct {
 	service.AccountRepository
-	mu             sync.Mutex
-	accounts       []service.Account
-	setErrorIDs    []int64
-	setTempIDs     []int64
-	rateLimitIDs   []int64
-	updateExtraIDs []int64
-	selectionCalls int
-	setErrorErr    error
-	setTempErr     error
-	missingOnGet   map[int64]bool
+	mu                  sync.Mutex
+	accounts            []service.Account
+	setErrorIDs         []int64
+	setTempIDs          []int64
+	rateLimitIDs        []int64
+	updateExtraIDs      []int64
+	selectionCalls      int
+	selectionErrorAfter int
+	selectionErr        error
+	setErrorErr         error
+	setTempErr          error
+	missingOnGet        map[int64]bool
 }
 
 type grokCredentialVideoOwnerRepo struct {
@@ -209,6 +211,9 @@ func (r *grokCredentialHandlerRepo) ListSchedulableByPlatform(_ context.Context,
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.selectionCalls++
+	if r.selectionErrorAfter > 0 && r.selectionCalls > r.selectionErrorAfter {
+		return nil, r.selectionErr
+	}
 	out := make([]service.Account, 0, len(r.accounts))
 	for _, account := range r.accounts {
 		if account.Platform == platform && account.IsSchedulable() {
@@ -767,6 +772,44 @@ func TestResponsesGrok429FailoverIsBounded(t *testing.T) {
 	})
 }
 
+func TestChatCompletionsClearsPriorAttemptProvenanceOnFinalPreForwardFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	provenanceHeaders := []string{
+		"X-Sub2API-Requested-Model",
+		"X-Sub2API-Selected-Account-Platform",
+		"X-Sub2API-Sent-Upstream-Model",
+		"X-Sub2API-Provenance-Level",
+		"X-Sub2API-Physical-Platform",
+		"X-Sub2API-Actual-Model",
+		"X-Sub2API-Upstream-Platform",
+		"X-Upstream-Model",
+		"X-Actual-Model",
+		"X-Sub2API-Upstream-Model",
+		"X-Model-Mapping-Chain",
+		"X-Sub2API-Model-Mapping-Chain",
+		"X-Upstream-Request-Id",
+	}
+
+	for _, mode := range []string{"selection_failure_after_429", "slot_failure_after_429"} {
+		t.Run(mode, func(t *testing.T) {
+			_, repo, upstream, router, cleanup := newGrokCredentialFailoverHandler(t, mode)
+			defer cleanup()
+
+			recorder := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", bytes.NewBufferString(`{"model":"grok","messages":[{"role":"user","content":"hello"}],"stream":false}`))
+			req.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(recorder, req)
+
+			require.Equal(t, []int64{801}, upstream.accountHits(), "only the first paid attempt may reach upstream")
+			require.Equal(t, 2, repo.selectorCalls(), "the final failure must occur in the second real handler attempt")
+			for _, name := range provenanceHeaders {
+				require.Empty(t, recorder.Header().Values(name), name)
+			}
+		})
+	}
+}
+
 func TestResponsesGrok402FailoverCooldown(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	_, repo, upstream, router, cleanup := newGrokCredentialFailoverHandler(t, "first_402")
@@ -1091,7 +1134,7 @@ func newGrokCredentialFailoverHandler(t *testing.T, mode string) (*OpenAIGateway
 			Extra: map[string]any{service.GrokMediaEligibleExtraKey: true},
 		},
 	}
-	if mode == "postmap_cancel" || mode == "first_402" || mode == "first_429" || mode == "all_429" || mode == "mixed_429_500" || mode == "mixed_500_429" || mode == "oauth_429_apikey_500" || mode == "owner_bind_unavailable" {
+	if mode == "postmap_cancel" || mode == "first_402" || mode == "first_429" || mode == "all_429" || mode == "mixed_429_500" || mode == "mixed_500_429" || mode == "oauth_429_apikey_500" || mode == "owner_bind_unavailable" || mode == "selection_failure_after_429" || mode == "slot_failure_after_429" {
 		accounts[0].Credentials["expires_at"] = time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
 	}
 	if mode == "all_429" || mode == "mixed_429_500" || mode == "mixed_500_429" || mode == "oauth_429_apikey_500" {
@@ -1113,6 +1156,10 @@ func newGrokCredentialFailoverHandler(t *testing.T, mode string) (*OpenAIGateway
 		accounts[1].Credentials["expires_at"] = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
 	}
 	repo := &grokCredentialHandlerRepo{accounts: accounts, missingOnGet: map[int64]bool{}}
+	if mode == "selection_failure_after_429" {
+		repo.selectionErrorAfter = 1
+		repo.selectionErr = errors.New("account selection unavailable")
+	}
 	if mode == "missing_row" {
 		repo.missingOnGet[801] = true
 	}
@@ -1138,6 +1185,8 @@ func newGrokCredentialFailoverHandler(t *testing.T, mode string) (*OpenAIGateway
 		upstream.failAccountID = 801
 	case "first_429":
 		upstream.rateLimitIDs = map[int64]bool{801: true}
+	case "selection_failure_after_429", "slot_failure_after_429":
+		upstream.rateLimitIDs = map[int64]bool{801: true}
 	case "all_429":
 		upstream.rateLimitIDs = map[int64]bool{801: true, 802: true}
 	case "mixed_429_500":
@@ -1153,8 +1202,24 @@ func newGrokCredentialFailoverHandler(t *testing.T, mode string) (*OpenAIGateway
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	cfg.Gateway.MaxAccountSwitches = 3
 	billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	accountSlotCalls := 0
+	cache := &concurrencyCacheMock{
+		acquireUserSlotFn: func(context.Context, int64, int, string) (bool, error) { return true, nil },
+		acquireAccountSlotFn: func(context.Context, int64, int, string) (bool, error) {
+			accountSlotCalls++
+			if mode == "slot_failure_after_429" && accountSlotCalls > 1 {
+				return false, errors.New("account slot unavailable")
+			}
+			return true, nil
+		},
+	}
+	concurrencyService := service.NewConcurrencyService(cache)
+	var schedulerConcurrencyService *service.ConcurrencyService
+	if mode == "slot_failure_after_429" {
+		schedulerConcurrencyService = concurrencyService
+	}
 	gateway := service.NewOpenAIGatewayService(
-		repo, nil, nil, nil, nil, nil, nil, cfg, nil, nil,
+		repo, nil, nil, nil, nil, nil, nil, cfg, nil, schedulerConcurrencyService,
 		service.NewBillingService(cfg, nil), nil, billingCache, upstream,
 		&service.DeferredService{}, nil, provider, nil, nil, nil, nil, nil,
 	)
@@ -1166,11 +1231,7 @@ func newGrokCredentialFailoverHandler(t *testing.T, mode string) (*OpenAIGateway
 		ownerRepo.getErr = errors.New("owner database unavailable")
 	}
 	gateway.SetGrokMediaVideoRequestOwnerRepository(ownerRepo)
-	cache := &concurrencyCacheMock{
-		acquireUserSlotFn:    func(context.Context, int64, int, string) (bool, error) { return true, nil },
-		acquireAccountSlotFn: func(context.Context, int64, int, string) (bool, error) { return true, nil },
-	}
-	h := NewOpenAIGatewayHandler(gateway, service.NewConcurrencyService(cache), billingCache, &service.APIKeyService{}, nil, nil, nil, nil, cfg)
+	h := NewOpenAIGatewayHandler(gateway, concurrencyService, billingCache, &service.APIKeyService{}, nil, nil, nil, nil, cfg)
 	apiKey := &service.APIKey{
 		ID: 902, GroupID: &groupID,
 		User:  &service.User{ID: 903, Status: service.StatusActive},

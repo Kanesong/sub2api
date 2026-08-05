@@ -58,6 +58,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	clearOpenAIUpstreamAttemptProvenance(c)
 	restrictionResult := s.detectCodexClientRestriction(c, account, body)
 	logCodexCLIOnlyDetection(ctx, c, account, getAPIKeyIDFromContext(c), restrictionResult, body)
 	if restrictionResult.Enabled && !restrictionResult.Matched {
@@ -275,6 +276,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	writeOpenAIUpstreamProvenance(c, account, originalModel, billingModel, upstreamModel, upstreamResponseRequestURL(resp), resp.Header)
 
 	// 8. Handle error response with failover
 	if resp.StatusCode >= 400 {
@@ -468,6 +470,10 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
+	writeOpenAIUpstreamProvenance(c, account, originalModel, billingModel, upstreamModel, upstreamResponseRequestURL(resp), resp.Header)
+	if strings.EqualFold(strings.TrimSpace(finalResponse.Status), "completed") {
+		promoteOpenAIActualModel(c, finalResponse.Model)
 	}
 	// 非流式响应必须为标准 JSON。上游被强制流式，其响应头 Content-Type 为
 	// text/event-stream，会经 WriteFilteredHeaders 透传进来；而 c.JSON 走 Gin 的

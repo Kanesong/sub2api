@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -59,6 +60,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	body []byte,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	clearOpenAIUpstreamAttemptProvenance(c)
 	startTime := time.Now()
 
 	// 1. Parse minimal fields needed for routing/billing
@@ -169,6 +171,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	writeOpenAIUpstreamProvenance(c, account, originalModel, billingModel, upstreamModel, upstreamResponseRequestURL(resp), resp.Header)
 
 	// 7. Handle error response with failover
 	if resp.StatusCode >= 400 {
@@ -430,10 +433,15 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(respBody); ok {
 		usage = parsedUsage
 	}
+	if actualModel, ok := rawChatCompletionsActualModel(respBody); ok {
+		promoteOpenAIActualModel(c, actualModel)
+	}
 
+	provenance := snapshotAuthoritativeUpstreamProvenance(c.Writer.Header())
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
+	restoreAuthoritativeUpstreamProvenance(c.Writer.Header(), provenance)
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		c.Writer.Header().Set("Content-Type", ct)
 	} else {
@@ -453,6 +461,202 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		Stream:          false,
 		Duration:        time.Since(startTime),
 	}, nil
+}
+
+// rawChatCompletionsActualModel only promotes a provider-reported model after
+// the buffered body proves that a real Chat Completion message was produced.
+// A transport-level HTTP 200, syntactically valid JSON, or an array-shaped
+// choices field alone is not protocol success.
+func rawChatCompletionsActualModel(body []byte) (string, bool) {
+	if !gjson.ValidBytes(body) {
+		return "", false
+	}
+	root := gjson.ParseBytes(body)
+	if !root.IsObject() || root.Get("error").Exists() {
+		return "", false
+	}
+	id := root.Get("id")
+	if id.Type != gjson.String || strings.TrimSpace(id.String()) == "" {
+		return "", false
+	}
+	object := root.Get("object")
+	if object.Type != gjson.String || object.String() != "chat.completion" {
+		return "", false
+	}
+	model := root.Get("model")
+	actualModel := strings.TrimSpace(model.String())
+	if model.Type != gjson.String || actualModel == "" {
+		return "", false
+	}
+	choices := root.Get("choices")
+	if !choices.IsArray() || len(choices.Array()) == 0 {
+		return "", false
+	}
+	for _, choice := range choices.Array() {
+		if !rawChatCompletionsChoiceIsTerminal(choice) {
+			return "", false
+		}
+	}
+	return actualModel, true
+}
+
+func rawChatCompletionsChoiceIsTerminal(choice gjson.Result) bool {
+	if !choice.IsObject() {
+		return false
+	}
+	index := choice.Get("index")
+	indexValue := index.Float()
+	if index.Type != gjson.Number || math.IsNaN(indexValue) || math.IsInf(indexValue, 0) || indexValue < 0 || math.Trunc(indexValue) != indexValue {
+		return false
+	}
+	finishReason := choice.Get("finish_reason")
+	if finishReason.Type != gjson.String || !rawChatCompletionsFinishReasonAllowed(finishReason.String()) {
+		return false
+	}
+	message := choice.Get("message")
+	if !message.IsObject() {
+		return false
+	}
+	role := message.Get("role")
+	if role.Type != gjson.String || role.String() != "assistant" {
+		return false
+	}
+
+	contentValid, contentResult := rawChatCompletionsContentResult(message.Get("content"))
+	reasoningValid, reasoningResult := rawChatCompletionsOptionalNonEmptyString(message.Get("reasoning_content"))
+	toolCallsValid, toolCallsResult := rawChatCompletionsToolCallsResult(message.Get("tool_calls"))
+	functionCallValid, functionCallResult := rawChatCompletionsFunctionCallResult(message.Get("function_call"))
+	refusalValid, refusalResult := rawChatCompletionsOptionalNonEmptyString(message.Get("refusal"))
+	if !contentValid || !reasoningValid || !toolCallsValid || !functionCallValid || !refusalValid {
+		return false
+	}
+
+	switch finishReason.String() {
+	case "tool_calls":
+		return toolCallsResult
+	case "function_call":
+		return functionCallResult
+	default:
+		// A terminal tool payload must use its matching finish reason. Treating it
+		// as stop/length/content_filter would accept an internally inconsistent
+		// envelope as protocol success.
+		if toolCallsResult || functionCallResult {
+			return false
+		}
+		return contentResult || reasoningResult || refusalResult
+	}
+}
+
+func rawChatCompletionsFinishReasonAllowed(value string) bool {
+	switch value {
+	case "stop", "length", "tool_calls", "content_filter", "function_call":
+		return true
+	default:
+		return false
+	}
+}
+
+func rawChatCompletionsContentResult(content gjson.Result) (valid bool, hasResult bool) {
+	if !content.Exists() || rawChatCompletionsJSONNull(content) {
+		return true, false
+	}
+	if content.Type == gjson.String {
+		return true, strings.TrimSpace(content.String()) != ""
+	}
+	if !content.IsArray() {
+		return false, false
+	}
+
+	parts := content.Array()
+	hasResult = false
+	for _, part := range parts {
+		if !part.IsObject() {
+			return false, false
+		}
+		partType := part.Get("type")
+		if partType.Type != gjson.String {
+			return false, false
+		}
+		switch partType.String() {
+		case "text":
+			text := part.Get("text")
+			if text.Type != gjson.String {
+				return false, false
+			}
+			hasResult = hasResult || strings.TrimSpace(text.String()) != ""
+		case "image_url":
+			imageURL := part.Get("image_url")
+			urlValue := imageURL.Get("url")
+			if !imageURL.IsObject() || urlValue.Type != gjson.String || strings.TrimSpace(urlValue.String()) == "" {
+				return false, false
+			}
+			hasResult = true
+		default:
+			return false, false
+		}
+	}
+	return true, hasResult
+}
+
+func rawChatCompletionsToolCallsResult(toolCalls gjson.Result) (valid bool, hasResult bool) {
+	if !toolCalls.Exists() || rawChatCompletionsJSONNull(toolCalls) {
+		return true, false
+	}
+	if !toolCalls.IsArray() {
+		return false, false
+	}
+	calls := toolCalls.Array()
+	if len(calls) == 0 {
+		return true, false
+	}
+	for _, call := range calls {
+		if !call.IsObject() {
+			return false, false
+		}
+		id := call.Get("id")
+		callType := call.Get("type")
+		function := call.Get("function")
+		name := function.Get("name")
+		arguments := function.Get("arguments")
+		if id.Type != gjson.String || strings.TrimSpace(id.String()) == "" ||
+			callType.Type != gjson.String || callType.String() != "function" ||
+			!function.IsObject() ||
+			name.Type != gjson.String || strings.TrimSpace(name.String()) == "" ||
+			arguments.Type != gjson.String || strings.TrimSpace(arguments.String()) == "" {
+			return false, false
+		}
+	}
+	return true, true
+}
+
+func rawChatCompletionsFunctionCallResult(functionCall gjson.Result) (valid bool, hasResult bool) {
+	if !functionCall.Exists() || rawChatCompletionsJSONNull(functionCall) {
+		return true, false
+	}
+	if !functionCall.IsObject() {
+		return false, false
+	}
+	name := functionCall.Get("name")
+	arguments := functionCall.Get("arguments")
+	if name.Type != gjson.String || strings.TrimSpace(name.String()) == "" ||
+		arguments.Type != gjson.String || strings.TrimSpace(arguments.String()) == "" {
+		return false, false
+	}
+	return true, true
+}
+
+func rawChatCompletionsOptionalNonEmptyString(value gjson.Result) (valid bool, hasResult bool) {
+	if !value.Exists() || rawChatCompletionsJSONNull(value) {
+		return true, false
+	}
+	if value.Type != gjson.String {
+		return false, false
+	}
+	return true, strings.TrimSpace(value.String()) != ""
+}
+
+func rawChatCompletionsJSONNull(value gjson.Result) bool {
+	return value.Type == gjson.Null && strings.TrimSpace(value.Raw) == "null"
 }
 
 // buildOpenAIChatCompletionsURL 拼接上游 Chat Completions 端点 URL。
