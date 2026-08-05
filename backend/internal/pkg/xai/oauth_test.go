@@ -146,6 +146,25 @@ func TestBuildGrokMediaURLs(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestBuildVideoURLRejectsUnsafeRequestIDs(t *testing.T) {
+	tests := []struct {
+		name      string
+		requestID string
+	}{
+		{name: "single dot", requestID: "."},
+		{name: "double dot", requestID: ".."},
+		{name: "nul byte", requestID: "request\x00id"},
+		{name: "carriage return", requestID: "request\rid"},
+		{name: "line feed", requestID: "request\nid"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := BuildVideoURL(DefaultBaseURL, tc.requestID)
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestValidateXAIURLsRejectUntrustedOAuthAndUnsafeBaseURLsByDefault(t *testing.T) {
 	_, err := ValidateOAuthEndpointURL("https://auth.example.test/oauth2/token")
 	require.Error(t, err)

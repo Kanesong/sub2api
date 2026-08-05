@@ -36,6 +36,8 @@ services:
     image: ${SUB2API_IMAGE:?SUB2API_IMAGE must be an immutable digest reference}
     container_name: sub2api
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     logging: *default-logging
     labels:
       org.opencontainers.image.revision: ${SUB2API_RELEASE_COMMIT:?SUB2API_RELEASE_COMMIT is required}
