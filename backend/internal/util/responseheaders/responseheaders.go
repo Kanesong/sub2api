@@ -110,6 +110,14 @@ func FilterHeaders(src http.Header, filter *CompiledHeaderFilter) http.Header {
 func WriteFilteredHeaders(dst http.Header, src http.Header, filter *CompiledHeaderFilter) {
 	filtered := FilterHeaders(src, filter)
 	for key, values := range filtered {
+		// RequestLogger owns the downstream X-Request-ID correlation value. An
+		// upstream provider may also return X-Request-ID, but appending it here
+		// would create an ambiguous two-value response header. Provider request
+		// IDs are exposed separately by the gateway's provenance contract as
+		// X-Upstream-Request-Id, so keep an existing gateway value unchanged.
+		if strings.EqualFold(key, "X-Request-ID") && len(dst.Values(key)) > 0 {
+			continue
+		}
 		for _, value := range values {
 			dst.Add(key, value)
 		}

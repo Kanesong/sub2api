@@ -212,6 +212,24 @@ func TestNewStreamHeaderWriterRejectsSpoofedUpstreamProvenance(t *testing.T) {
 	require.Equal(t, "trusted-request", rec.Header().Get(headerUpstreamRequestID))
 }
 
+func TestNewStreamHeaderWriterKeepsOneGatewayRequestID(t *testing.T) {
+	t.Parallel()
+
+	rec, c := newUpstreamProvenanceTestContext(t, CompositeRouteDecision{})
+	c.Writer.Header().Set("X-Request-ID", "gateway-correlation")
+	svc := &OpenAIGatewayService{
+		responseHeaderFilter: compileResponseHeaderFilter(&config.Config{}),
+	}
+
+	writeHeaders := svc.newStreamHeaderWriter(c, http.Header{
+		"X-Request-ID": []string{"upstream-correlation"},
+	})
+	writeHeaders()
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, []string{"gateway-correlation"}, rec.Header().Values("X-Request-ID"))
+}
+
 func TestWriteOpenAIUpstreamProvenanceCustomRelayStaysLogicalOnly(t *testing.T) {
 	t.Parallel()
 
