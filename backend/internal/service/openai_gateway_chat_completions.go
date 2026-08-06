@@ -466,7 +466,14 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	// accumulated delta events so the client receives the full content.
 	acc.SupplementResponseOutput(finalResponse)
 
-	chatResp := apicompat.ResponsesToChatCompletions(finalResponse, originalModel)
+	responseModel := originalModel
+	if account.Platform == PlatformGrok && strings.TrimSpace(finalResponse.Model) != "" {
+		// Preserve xAI's provider-reported model in the translated body. Strict
+		// consumers can then compare it with the authoritative provenance
+		// headers instead of seeing the public request alias rewritten here.
+		responseModel = strings.TrimSpace(finalResponse.Model)
+	}
+	chatResp := apicompat.ResponsesToChatCompletions(finalResponse, responseModel)
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)

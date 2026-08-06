@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestWriteOpenAIUpstreamProvenanceIdentityGrok(t *testing.T) {
+func TestWriteOpenAIUpstreamProvenanceAcceptsExactGrokBuildAlias(t *testing.T) {
 	t.Parallel()
 
 	rec, c := newUpstreamProvenanceTestContext(t, CompositeRouteDecision{
@@ -26,7 +26,7 @@ func TestWriteOpenAIUpstreamProvenanceIdentityGrok(t *testing.T) {
 		"https://api.x.ai/v1/responses", http.Header{
 			"Xai-Request-Id": []string{"xai_req_123"},
 		})
-	promoteOpenAIActualModel(c, "grok-4.5")
+	promoteOpenAIActualModel(c, "grok-4.5-build")
 
 	require.Equal(t, "grok-4.5", rec.Header().Get(headerSub2APIRequestedModel))
 	require.Equal(t, PlatformGrok, rec.Header().Get(headerSub2APISelectedAccountPlatform))
@@ -34,11 +34,28 @@ func TestWriteOpenAIUpstreamProvenanceIdentityGrok(t *testing.T) {
 	require.Equal(t, provenanceLevelDirectOfficial, rec.Header().Get(headerSub2APIProvenanceLevel))
 	require.Equal(t, PlatformGrok, rec.Header().Get(headerSub2APIPhysicalPlatform))
 	require.Equal(t, PlatformGrok, rec.Header().Get(headerSub2APIUpstreamPlatform))
-	require.Equal(t, "grok-4.5", rec.Header().Get(headerActualModel))
-	require.Equal(t, "grok-4.5", rec.Header().Get(headerSub2APIActualModel))
-	require.Equal(t, "grok-4.5", rec.Header().Get(headerSub2APIUpstreamModel))
+	require.Equal(t, "grok-4.5-build", rec.Header().Get(headerActualModel))
+	require.Equal(t, "grok-4.5-build", rec.Header().Get(headerSub2APIActualModel))
+	require.Equal(t, "grok-4.5-build", rec.Header().Get(headerUpstreamModel))
+	require.Equal(t, "grok-4.5-build", rec.Header().Get(headerSub2APIUpstreamModel))
 	require.Equal(t, "grok-4.5", rec.Header().Get(headerSub2APIModelMappingChain))
 	require.Equal(t, "xai_req_123", rec.Header().Get(headerUpstreamRequestID))
+}
+
+func TestPromoteOpenAIActualModelRejectsUnknownGrokSuffix(t *testing.T) {
+	t.Parallel()
+
+	rec, c := newUpstreamProvenanceTestContext(t, CompositeRouteDecision{})
+	writeOpenAIUpstreamProvenance(c, &Account{Platform: PlatformGrok}, "grok-4.5", "grok-4.5", "grok-4.5",
+		"https://api.x.ai/v1/responses", http.Header{})
+	promoteOpenAIActualModel(c, "grok-4.5-build-preview")
+
+	require.Equal(t, "grok-4.5", rec.Header().Get(headerSub2APISentUpstreamModel))
+	require.Equal(t, "grok-4.5", rec.Header().Get(headerSub2APIModelMappingChain))
+	require.Empty(t, rec.Header().Get(headerActualModel))
+	require.Empty(t, rec.Header().Get(headerSub2APIActualModel))
+	require.Empty(t, rec.Header().Get(headerUpstreamModel))
+	require.Empty(t, rec.Header().Get(headerSub2APIUpstreamModel))
 }
 
 func TestWriteOpenAIUpstreamProvenanceExposesTransparentMapping(t *testing.T) {

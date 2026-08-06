@@ -886,6 +886,51 @@ func TestForwardAsRawChatCompletions_ActualModelRequiresValidProtocolSuccess(t *
 	}
 }
 
+func TestBufferRawChatCompletions_GrokActualModelAliasContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name       string
+		actual     string
+		wantHeader string
+	}{
+		{name: "exact build alias is attested", actual: "grok-4.5-build", wantHeader: "grok-4.5-build"},
+		{name: "unknown build suffix stays unproven", actual: "grok-4.5-build-preview"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			writeOpenAIUpstreamProvenance(c, &Account{Platform: PlatformGrok}, "grok-4.5", "grok-4.5", "grok-4.5",
+				"https://api.x.ai/v1/chat/completions", http.Header{})
+
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(
+					`{"id":"chatcmpl_grok","object":"chat.completion","model":"` + tt.actual + `","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`,
+				)),
+			}
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
+
+			result, err := svc.bufferRawChatCompletions(c, resp, "grok-4.5", "grok-4.5", "grok-4.5", nil, nil, time.Now())
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, tt.actual, gjson.Get(rec.Body.String(), "model").String())
+			require.Equal(t, "grok-4.5", rec.Header().Get(headerSub2APIRequestedModel))
+			require.Equal(t, "grok-4.5", rec.Header().Get(headerSub2APISentUpstreamModel))
+			require.Equal(t, "grok-4.5", rec.Header().Get(headerModelMappingChain))
+			require.Equal(t, tt.wantHeader, rec.Header().Get(headerActualModel))
+			require.Equal(t, tt.wantHeader, rec.Header().Get(headerSub2APIActualModel))
+			require.Equal(t, tt.wantHeader, rec.Header().Get(headerUpstreamModel))
+			require.Equal(t, tt.wantHeader, rec.Header().Get(headerSub2APIUpstreamModel))
+		})
+	}
+}
+
 func TestForwardAsRawChatCompletions_ProvenanceUsesFinalResponseRequestURL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

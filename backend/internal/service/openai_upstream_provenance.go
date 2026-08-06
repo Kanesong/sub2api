@@ -123,10 +123,29 @@ func promoteOpenAIActualModel(c *gin.Context, actualModel string) {
 	if actualModel == "" {
 		return
 	}
+	if headers.Get(headerSub2APIPhysicalPlatform) == PlatformGrok &&
+		!grokActualModelMatchesSentModel(headers.Get(headerSub2APISentUpstreamModel), actualModel) {
+		return
+	}
 	setOrDeleteHeader(headers, headerSub2APIActualModel, actualModel)
 	setOrDeleteHeader(headers, headerUpstreamModel, actualModel)
 	setOrDeleteHeader(headers, headerActualModel, actualModel)
 	setOrDeleteHeader(headers, headerSub2APIUpstreamModel, actualModel)
+}
+
+// grokActualModelMatchesSentModel accepts only the exact xAI model identities
+// that this gateway can attest. xAI currently reports grok-4.5-build for some
+// successful grok-4.5 executions; arbitrary suffixes must remain unproven.
+func grokActualModelMatchesSentModel(sentModel, actualModel string) bool {
+	sentModel = strings.TrimSpace(sentModel)
+	actualModel = strings.TrimSpace(actualModel)
+	if sentModel == "" || actualModel == "" {
+		return false
+	}
+	if actualModel == sentModel {
+		return true
+	}
+	return sentModel == "grok-4.5" && actualModel == "grok-4.5-build"
 }
 
 // classifyOpenAIUpstreamProvenance deliberately recognizes only official
