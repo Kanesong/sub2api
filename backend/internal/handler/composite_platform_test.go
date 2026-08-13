@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -137,4 +138,34 @@ func TestClientRequestedModelUsesCompositePublicModel(t *testing.T) {
 	require.Equal(t, "public-alias", fields.OriginalModel)
 	require.Equal(t, "public-alias", fields.ChannelMappedModel)
 	require.Equal(t, "public-alias\u2192gpt-5", fields.ModelMappingChain)
+}
+
+func TestBindOpenAIRequestedPublicModelPreservesIngressAcrossChannelMapping(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("ordinary channel mapping captures inbound public model", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		bindOpenAIRequestedPublicModel(c, "public-a")
+
+		got, ok := service.RequestedPublicModelFromContext(c.Request.Context())
+		require.True(t, ok)
+		require.Equal(t, "public-a", got)
+	})
+
+	t.Run("existing composite public model cannot be overwritten", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/chat/completions", nil)
+		c.Request = c.Request.WithContext(service.WithCompositeRouteDecision(c.Request.Context(), service.CompositeRouteDecision{
+			Matched:        true,
+			PublicModel:    "public-a",
+			TargetPlatform: service.PlatformOpenAI,
+			UpstreamModel:  "composite-b",
+		}))
+		bindOpenAIRequestedPublicModel(c, "channel-c")
+
+		got, ok := service.RequestedPublicModelFromContext(c.Request.Context())
+		require.True(t, ok)
+		require.Equal(t, "public-a", got)
+	})
 }
