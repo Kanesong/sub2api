@@ -65,3 +65,32 @@ func TestFilterHeadersEnabledUsesAllowlist(t *testing.T) {
 		t.Fatalf("expected X-Blocked removed, got %q", filtered.Get("X-Blocked"))
 	}
 }
+
+func TestWriteFilteredHeadersPreservesGatewayRequestID(t *testing.T) {
+	dst := http.Header{}
+	dst.Set("X-Request-ID", "gateway-request")
+	src := http.Header{}
+	src.Add("X-Request-ID", "upstream-request")
+	src.Add("Content-Type", "application/json")
+
+	WriteFilteredHeaders(dst, src, CompileHeaderFilter(config.ResponseHeaderConfig{}))
+
+	if values := dst.Values("X-Request-ID"); len(values) != 1 || values[0] != "gateway-request" {
+		t.Fatalf("expected one gateway X-Request-ID, got %#v", values)
+	}
+	if dst.Get("Content-Type") != "application/json" {
+		t.Fatalf("expected other filtered headers to be copied, got %q", dst.Get("Content-Type"))
+	}
+}
+
+func TestWriteFilteredHeadersCopiesUpstreamRequestIDWhenDestinationIsEmpty(t *testing.T) {
+	dst := http.Header{}
+	src := http.Header{}
+	src.Add("X-Request-ID", "upstream-request")
+
+	WriteFilteredHeaders(dst, src, CompileHeaderFilter(config.ResponseHeaderConfig{}))
+
+	if values := dst.Values("X-Request-ID"); len(values) != 1 || values[0] != "upstream-request" {
+		t.Fatalf("expected one upstream X-Request-ID, got %#v", values)
+	}
+}

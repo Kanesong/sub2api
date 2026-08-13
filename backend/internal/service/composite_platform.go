@@ -72,6 +72,23 @@ func RequestedPublicModelFromContext(ctx context.Context) (string, bool) {
 	return model, true
 }
 
+// WithRequestedPublicModel preserves the immutable model name supplied by the
+// client before channel/account mappings rewrite the request body. An existing
+// composite-route value wins because it was captured closer to ingress.
+func WithRequestedPublicModel(ctx context.Context, model string) context.Context {
+	if ctx == nil {
+		return ctx
+	}
+	if _, ok := RequestedPublicModelFromContext(ctx); ok {
+		return ctx
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxkey.RequestedPublicModel, model)
+}
+
 func CompositeRouteSourceFromContext(ctx context.Context) (string, bool) {
 	if ctx == nil {
 		return "", false

@@ -511,6 +511,7 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	clearOpenAIUpstreamAttemptProvenance(c)
 	startTime := time.Now()
 
 	var chatReq apicompat.ChatCompletionsRequest
@@ -602,6 +603,7 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	writeOpenAIUpstreamProvenance(c, account, originalModel, billingModel, upstreamModel, upstreamResponseRequestURL(resp), resp.Header)
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
