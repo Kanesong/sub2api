@@ -24,6 +24,7 @@ import (
 
 var (
 	ErrNoUpdateAvailable         = infraerrors.Conflict("ALREADY_UP_TO_DATE", "no update available; current version is latest")
+	ErrInPlaceUpdateDisabled     = infraerrors.Forbidden("IN_PLACE_UPDATE_DISABLED", "in-place update and rollback are disabled for this deployment")
 	ErrRollbackVersionNotAllowed = infraerrors.BadRequest("ROLLBACK_VERSION_NOT_ALLOWED", "version is not in the allowed rollback list")
 )
 
@@ -43,6 +44,10 @@ const (
 	maxRollbackVersions = 3
 	// Fetch a few extra releases so filtering (current/newer/prerelease) still leaves enough candidates
 	rollbackFetchPageSize = 15
+
+	// Custom deployments can disable binary replacement while keeping version
+	// checks available. Controlled image deployments remain unaffected.
+	inPlaceUpdateDisabledEnv = "SUB2API_INPLACE_UPDATE_DISABLED"
 )
 
 // UpdateCache defines cache operations for update service
@@ -163,6 +168,10 @@ func (s *UpdateService) CheckUpdate(ctx context.Context, force bool) (*UpdateInf
 // PerformUpdate downloads and applies the update
 // Uses atomic file replacement pattern for safe in-place updates
 func (s *UpdateService) PerformUpdate(ctx context.Context) error {
+	if inPlaceUpdateDisabled() {
+		return ErrInPlaceUpdateDisabled
+	}
+
 	info, err := s.CheckUpdate(ctx, true)
 	if err != nil {
 		return err
@@ -281,6 +290,10 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 
 // Rollback restores the previous version
 func (s *UpdateService) Rollback() error {
+	if inPlaceUpdateDisabled() {
+		return ErrInPlaceUpdateDisabled
+	}
+
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get executable path: %w", err)
@@ -327,6 +340,10 @@ func (s *UpdateService) ListRollbackVersions(ctx context.Context) ([]RollbackVer
 // The target must be one of the versions returned by ListRollbackVersions;
 // anything else (including the current version) is rejected.
 func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) error {
+	if inPlaceUpdateDisabled() {
+		return ErrInPlaceUpdateDisabled
+	}
+
 	target := strings.TrimPrefix(strings.TrimSpace(version), "v")
 	if target == "" {
 		return ErrRollbackVersionNotAllowed
@@ -358,6 +375,15 @@ func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) e
 	}
 
 	return s.applyReleaseAssets(ctx, assets)
+}
+
+func inPlaceUpdateDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(inPlaceUpdateDisabledEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // fetchRollbackCandidates fetches recent releases and keeps the newest

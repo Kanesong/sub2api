@@ -69,6 +69,48 @@ func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoUpdateAvailable)
 }
 
+func TestUpdateServicePerformUpdateDisabledBeforeCheckingRelease(t *testing.T) {
+	t.Setenv(inPlaceUpdateDisabledEnv, "true")
+	svc := NewUpdateService(
+		&updateServiceCacheStub{},
+		&updateServiceGitHubClientStub{},
+		"0.1.176",
+		"release",
+	)
+
+	err := svc.PerformUpdate(context.Background())
+
+	require.ErrorIs(t, err, ErrInPlaceUpdateDisabled)
+}
+
+func TestUpdateServiceRollbackDisabledBeforeInspectingExecutable(t *testing.T) {
+	t.Setenv(inPlaceUpdateDisabledEnv, "1")
+	svc := NewUpdateService(
+		&updateServiceCacheStub{},
+		&updateServiceGitHubClientStub{},
+		"0.1.176",
+		"release",
+	)
+
+	err := svc.Rollback()
+
+	require.ErrorIs(t, err, ErrInPlaceUpdateDisabled)
+}
+
+func TestUpdateServiceRollbackToVersionDisabledBeforeFetchingRelease(t *testing.T) {
+	t.Setenv(inPlaceUpdateDisabledEnv, "on")
+	svc := NewUpdateService(
+		&updateServiceCacheStub{},
+		&updateServiceGitHubClientStub{},
+		"0.1.176",
+		"release",
+	)
+
+	err := svc.RollbackToVersion(context.Background(), "0.1.175")
+
+	require.ErrorIs(t, err, ErrInPlaceUpdateDisabled)
+}
+
 func newRollbackTestService(current string, releases []*GitHubRelease) *UpdateService {
 	return NewUpdateService(
 		&updateServiceCacheStub{},
