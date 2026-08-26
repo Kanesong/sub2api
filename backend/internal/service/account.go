@@ -1838,10 +1838,26 @@ func (a *Account) GrokMediaGenerationEligibility() (bool, string) {
 	if isKnownGrokFreeAccount(a) {
 		return false, "billing_free_tier"
 	}
+	// Some OAuth JWTs carry an explicit paid subscription tier while the
+	// billing endpoint returns a successful but quota-less response
+	// (monthly_limit=0, no plan/usage percentage). That response is not proof
+	// of a free account; the signed account entitlement is positive evidence
+	// for media admission and must be honored before the inconclusive fallback.
+	if grokCredentialHasPaidSubscriptionTier(a) {
+		return true, "credential_paid_tier"
+	}
 	if !grokBillingHasAuthoritativeQuota(billing) {
 		return false, "billing_inconclusive"
 	}
 	return true, "eligible"
+}
+
+func grokCredentialHasPaidSubscriptionTier(account *Account) bool {
+	if account == nil {
+		return false
+	}
+	tier := strings.TrimSpace(account.GetCredential("subscription_tier"))
+	return tier != "" && !isGrokUnknownSubscriptionTier(tier) && !isGrokFreeSubscriptionTier(tier)
 }
 
 func grokMediaEligibilityOverride(extra map[string]any) (bool, bool) {

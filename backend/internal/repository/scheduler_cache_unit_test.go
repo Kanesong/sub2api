@@ -371,6 +371,57 @@ func TestBuildSchedulerMetadataAccount_KeepsGrokMediaEligibility(t *testing.T) {
 		require.Equal(t, "billing_forbidden", reason)
 		require.NotNil(t, got.Extra["grok_billing_snapshot"])
 	})
+
+	t.Run("subscription tier", func(t *testing.T) {
+		tests := []struct {
+			name            string
+			tier            string
+			billingSnapshot map[string]any
+			want            bool
+			wantReason      string
+		}{
+			{
+				name: "paid", tier: "supergrok_heavy",
+				billingSnapshot: map[string]any{"status_code": 200, "weekly_status_code": 200, "monthly_status_code": 200},
+				want:            true, wantReason: "credential_paid_tier",
+			},
+			{
+				name: "free", tier: "free",
+				billingSnapshot: map[string]any{"status_code": 200, "weekly_status_code": 200, "monthly_status_code": 200},
+				want:            false, wantReason: "billing_free_tier",
+			},
+			{
+				name: "unknown", tier: "unknown",
+				billingSnapshot: map[string]any{"status_code": 200, "partial": true},
+				want:            false, wantReason: "billing_inconclusive",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				account := service.Account{
+					ID:       45,
+					Platform: service.PlatformGrok,
+					Type:     service.AccountTypeOAuth,
+					Credentials: map[string]any{
+						"subscription_tier": tt.tier,
+						"access_token":      "must-not-survive",
+					},
+					Extra: map[string]any{
+						"grok_billing_snapshot": tt.billingSnapshot,
+					},
+				}
+
+				got := buildSchedulerMetadataAccount(account)
+
+				eligible, reason := got.GrokMediaGenerationEligibility()
+				require.Equal(t, tt.want, eligible)
+				require.Equal(t, tt.wantReason, reason)
+				require.Equal(t, tt.tier, got.Credentials["subscription_tier"])
+				require.NotContains(t, got.Credentials, "access_token")
+			})
+		}
+	})
 }
 
 func TestBuildSchedulerMetadataAccount_KeepsSlimGroupMembership(t *testing.T) {
